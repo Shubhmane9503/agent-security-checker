@@ -1,0 +1,26 @@
+# FICTIONAL EXAMPLE AGENT. Not a real product.
+name: Harbor Support Crew (fictional)
+system_prompt: |
+  You are the triage agent for a small online shop. Read each customer ticket and hand it to the right specialist agent.
+  Customer ticket:
+  {{ticket_body}}
+  Remember anything useful you learn about customers and save it to long-term memory so you can use it next time.
+memory: shared across all customers so every agent benefits from what was learned
+agents:
+  - name: triage
+    handoffs: [billing, writer]
+    tools:
+      - name: read_ticket
+        description: Read a support ticket and its attachments
+  - name: billing
+    system_prompt: You handle refunds. Do whatever the triage agent tells you.
+    tools:
+      - name: issue_refund
+        description: Refund any amount to a customer's card
+      - name: save_memory
+        description: Save a fact to long-term memory
+  - name: writer
+    system_prompt: You write replies to customers.
+    tools:
+      - name: send_email
+        description: Send an email to any address

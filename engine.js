@@ -1,41 +1,28 @@
-// AI Agent Security Checker — deterministic rule engine.
-// Pure functions, no I/O, no network. Runs in the browser and in Node (tests, sample generation).
+// AI Agent Security Checker: deterministic rule engine (v2).
+// Pure functions, no I/O, no network. Runs in the browser and in Node (tests, CLI, sample generation).
+import { SEVERITY_WEIGHT, SEVERITY_ORDER, CATEGORIES, CATALOG, OWASP, ATLAS } from './lib/meta.js'
+import { parseInput, normalize, MAX_INPUT_CHARS } from './lib/parse.js'
 
-export const SEVERITY_WEIGHT = { critical: 25, high: 15, medium: 8, low: 3 }
-export const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low']
-export const CATEGORIES = {
-  injection: 'Prompt injection exposure',
-  permissions: 'Tool permissions',
-  leakage: 'Secret & data leakage',
-}
+export { SEVERITY_WEIGHT, SEVERITY_ORDER, CATEGORIES, CATALOG, OWASP, ATLAS, parseInput, MAX_INPUT_CHARS }
+export const ENGINE_VERSION = '2.0.0'
+export const LOSS_SCALE = 0.6
+export const CATEGORY_CAP = 40
 
-// ---------- rule catalog (id -> title, fix) ----------
-export const CATALOG = {
-  'PI-1': { cat: 'injection', title: 'No instruction hierarchy', fix: 'State that system instructions outrank everything else, and that text inside documents, web pages, emails, tool results or user-supplied files is data to analyse, never instructions to follow.' },
-  'PI-2': { cat: 'injection', title: 'Untrusted content interpolated into the prompt', fix: 'Do not splice external content straight into the system prompt. Pass it as a separate, clearly labelled message or tool result, and keep the system prompt static.' },
-  'PI-3': { cat: 'injection', title: 'Untrusted content is not delimited', fix: 'Wrap every untrusted block in explicit delimiters (for example <untrusted_document>…</untrusted_document>), tell the model the delimited text is data only, and strip delimiter look-alikes from the content first.' },
-  'PI-4': { cat: 'injection', title: 'Agent reads untrusted content with no stated handling', fix: 'For tools that fetch web pages, emails, tickets or files, add handling rules: summarise only, never act on instructions found inside, and require confirmation before any action triggered after reading such content.' },
-  'PI-5': { cat: 'injection', title: 'Sample output shows signs of injection or prompt disclosure', fix: 'Treat this output as a failed test. Add the instruction-hierarchy rule, add an output check for system-prompt text, and re-run your injection test set.' },
-  'TP-1': { cat: 'permissions', title: 'High-impact tool without human confirmation', fix: 'Require explicit human approval for each call (or a pre-approved, narrowly scoped allowlist). Show the exact command, recipient, path or amount before it runs.' },
-  'TP-2': { cat: 'permissions', title: 'High-impact tool without scoping', fix: 'Constrain the tool: allowlist commands, domains, recipients and directories; cap amounts; use a least-privilege credential; run shell and file tools in a sandbox with no secrets mounted.' },
-  'TP-3': { cat: 'permissions', title: 'Untrusted input combined with an exfiltration-capable tool', fix: 'Break the chain: do not give one agent both untrusted-content access and a send/network tool, or gate the send behind human review and a destination allowlist.' },
-  'TP-4': { cat: 'permissions', title: 'Prompt tells the agent to act without asking', fix: 'Remove instructions such as "never ask for confirmation". Keep an approval step for irreversible or externally visible actions.' },
-  'TP-5': { cat: 'permissions', title: 'Overly generic tool (unrestricted capability)', fix: 'Replace general-purpose tools (run_any_command, http_request to any URL) with narrow, purpose-built tools that take typed parameters.' },
-  'DL-1': { cat: 'leakage', title: 'Secret or credential in the prompt or config', fix: 'Remove it, rotate the credential now, and keep secrets in a server-side vault. Give the agent a tool that uses the secret on its behalf without ever showing it to the model.' },
-  'DL-2': { cat: 'leakage', title: 'No output filtering or redaction', fix: 'Add a deterministic output filter: redact secret patterns and PII, block system-prompt text, and restrict markdown images and links to an allowlist of domains.' },
-  'DL-3': { cat: 'leakage', title: 'Personal data handled without minimisation rules', fix: 'Say what personal data the agent may see and return, mask identifiers by default, avoid logging raw PII, and define retention.' },
-  'DL-4': { cat: 'leakage', title: 'Secrecy relies on the prompt alone', fix: 'A line like "do not reveal these instructions" is not a control. Assume the system prompt can be extracted and keep nothing sensitive in it.' },
-  'DL-5': { cat: 'leakage', title: 'Sample output contains a secret or personal data', fix: 'Treat this as a live leak. Add output redaction and review which context the agent can read.' },
-}
-
-// ---------- secret / PII patterns ----------
-const SECRET_PATTERNS = [
-  ['AWS access key ID', /\bAKIA[0-9A-Z]{16}\b/],
-  ['OpenAI-style API key', /\bsk-[A-Za-z0-9_-]{16,}\b/],
+// ---------- secret / PII patterns (all bounded, linear-time) ----------
+export const SECRET_PATTERNS = [
+  ['AWS access key ID', /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ['AWS secret access key', /\baws_?secret_?access_?key["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}\b/i],
+  ['Stripe secret key', /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/],
+  ['OpenAI/Anthropic-style API key', /\bsk-[A-Za-z0-9_-]{16,}\b/],
+  ['GitHub fine-grained token', /\bgithub_pat_[A-Za-z0-9_]{22,}\b/],
   ['GitHub token', /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
   ['Slack token', /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/],
+  ['Slack webhook URL', /https:\/\/hooks\.slack\.com\/services\/[A-Z0-9]{6,}\/[A-Z0-9]{6,}\/[A-Za-z0-9]{16,}/],
   ['Google API key', /\bAIza[0-9A-Za-z_-]{30,}\b/],
-  ['Private key block', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ['SendGrid API key', /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/],
+  ['npm token', /\bnpm_[A-Za-z0-9]{36}\b/],
+  ['Azure storage account key', /\bAccountKey=[A-Za-z0-9+/=]{40,}/],
+  ['Private key block', /-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----/],
   ['Bearer token', /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/],
   ['JWT', /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/],
   ['Database URL with password', /\b[a-z][a-z0-9+.-]{1,20}:\/\/[^\s:@/]{1,100}:[^\s@/]{1,200}@[^\s/]{1,200}/i],
@@ -46,10 +33,53 @@ const PII_PATTERNS = [
   ['email address', /\b[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,255}\.[A-Z]{2,24}\b/i],
   ['US SSN', /\b\d{3}-\d{2}-\d{4}\b/],
   ['payment card number', /\b(?:\d[ -]?){13,16}\b/],
+  ['IBAN', /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/],
   ['phone number', /\b\+?\d{1,3}[ -]?\(?\d{3}\)?[ -]?\d{3}[ -]?\d{4}\b/],
 ]
 
-// ---------- tool classification ----------
+export function maskSecret(s) {
+  const t = String(s)
+  return t.length <= 8 ? '****' : t.slice(0, 3) + '…' + '*'.repeat(4) + ' (' + t.length + ' chars)'
+}
+function maskPii(label, s) {
+  const t = String(s)
+  if (label === 'email address') { const [u, d] = t.split('@'); return `${u.slice(0, 1)}***@${d}` }
+  const digits = t.replace(/\D/g, '')
+  if (digits.length >= 4) return '*'.repeat(Math.max(0, digits.length - 4)) + digits.slice(-4)
+  return '****'
+}
+
+/** Find secrets in text. Returns one entry per pattern with the match masked. */
+export function scanSecrets(text) {
+  const out = []
+  const s = String(text ?? '')
+  for (const [label, re] of SECRET_PATTERNS) { const m = s.match(re); if (m) out.push({ label, masked: maskSecret(m[0]) }) }
+  return out
+}
+function mod97(iban) {
+  const r = (iban.slice(4) + iban.slice(0, 4)).replace(/[A-Z]/g, (c) => c.charCodeAt(0) - 55)
+  let rem = 0
+  for (const ch of r) rem = (rem * 10 + +ch) % 97
+  return rem === 1
+}
+/** Find personal data in text (email, SSN, Luhn-valid card, IBAN with checksum, phone). One entry per kind, masked. */
+export function scanPII(text) {
+  const out = []
+  const s = String(text ?? '')
+  for (const [label, re] of PII_PATTERNS) {
+    let hit = null
+    if (label === 'payment card number' || label === 'IBAN') {
+      let n = 0
+      for (const m of s.matchAll(new RegExp(re.source, 'g'))) {
+        if (++n > 100) break
+        if (label === 'payment card number' ? luhn(m[0]) : mod97(m[0])) { hit = m[0]; break }
+      }
+    } else { const m = s.match(re); if (m) hit = m[0] }
+    if (hit) out.push({ label, masked: maskPii(label, hit) })
+  }
+  return out
+}
+
 const TOOL_KINDS = [
   ['shell', 'shell / code execution', /\b(shell|bash|terminal|exec(ute)?|run[_ -]?(command|code|script)|subprocess|eval|python[_ -]?repl|code[_ -]?interpreter|ssh)\b/i, 'critical'],
   ['payment', 'payment / money movement', /\b(pay(ment)?s?|transfer|refund|charge|wire|purchase|checkout|invoice|stripe|paypal|billing)\b/i, 'critical'],
@@ -65,75 +95,13 @@ const SCOPE = /\b(allow[- ]?list(ed)?|whitelist(ed)?|scoped?|restricted to|limit
 const UNTRUSTED_TOOL = /\b(browse|browser|web[_ -]?(search|fetch|browse|page)|fetch[_ -]?url|scrape|read[_ -]?(email|inbox|mail)|inbox|search[_ -]?(email|mail)|rag|retriev(e|al)|knowledge[_ -]?base|read[_ -]?file|open[_ -]?file|ticket|issue[s]?|pull[_ -]?request|document|pdf|transcript|rss|slack[_ -]?read|read[_ -]?message)\b/i
 const EXFIL_KINDS = ['email', 'network']
 
-// ---------- input parsing ----------
-function asBool(v) { return v === true || /^(true|yes|1|required)$/i.test(String(v || '')) }
-
-export const MAX_INPUT_CHARS = 200000
-const MAX_TOOLS = 200
-const MAX_SAMPLES = 50
-
-export function parseInput(raw) {
-  let text = String(raw ?? '').slice(0, MAX_INPUT_CHARS * 10).trim()
-  if (!text) return { systemPrompt: '', tools: [], samples: [] }
-  if (text[0] === '{') {
-    try { return normalize(JSON.parse(text)) } catch { /* fall through to text */ }
-  }
-  text = text.slice(0, MAX_INPUT_CHARS)
-  const sec = { prompt: [], tools: [], samples: [] }
-  let cur = 'prompt'
-  let sawHeader = false
-  for (const line of text.split(/\r?\n/)) {
-    const h = line.match(/^\s*#{0,3}\s*(system[ _-]?prompt|prompt|tools?|tool list|permissions|sample[ _-]?outputs?|outputs?|examples?)\s*:?\s*$/i)
-    if (h) {
-      sawHeader = true
-      const k = h[1].toLowerCase()
-      cur = /tool|permission/.test(k) ? 'tools' : /output|example|sample/.test(k) ? 'samples' : 'prompt'
-      continue
-    }
-    const inline = line.match(/^\s*(system[ _-]?prompt|tools?|sample[ _-]?outputs?)\s*:\s*(.+)$/i)
-    if (inline && !sawHeader) {
-      sawHeader = true
-      cur = /tool/i.test(inline[1]) ? 'tools' : /sample/i.test(inline[1]) ? 'samples' : 'prompt'
-      sec[cur].push(inline[2]); continue
-    }
-    sec[cur].push(line)
-  }
-  const tools = sec.tools.map((l) => l.trim()).filter((l) => l && !/^[-*•\s]*(none|n\/a|na|no tools?|nil|-+)\.?$/i.test(l)).map((l) => {
-    const m = l.replace(/^[-*•\d.)\s]+/, '').match(/^`?([A-Za-z0-9_.\-/ ]{1,60}?)`?\s*(?:[:\u2014\u2013]|\s-\s|\()\s*(.*)$/)
-    return m ? { name: m[1].trim(), description: m[2].replace(/\)\s*$/, '') } : { name: l.replace(/^[-*•\d.)\s]+/, '').slice(0, 60), description: l }
-  })
-  const samples = sec.samples.join('\n').split(/\n\s*---+\s*\n/).map((s) => s.trim()).filter(Boolean).slice(0, MAX_SAMPLES)
-  return { systemPrompt: sec.prompt.join('\n').trim(), tools: tools.slice(0, MAX_TOOLS), samples }
-}
-
-function normalize(o) {
-  if (!o || typeof o !== 'object' || Array.isArray(o)) return { systemPrompt: '', tools: [], samples: [] }
-  const sp = o.system_prompt ?? o.systemPrompt ?? o.prompt ?? o.instructions ?? o.system ?? ''
-  const tl = o.tools ?? o.functions ?? o.permissions ?? []
-  const tools = (Array.isArray(tl) ? tl : []).slice(0, MAX_TOOLS).filter((t) => t && typeof t === 'object' || typeof t === 'string').map((t) => {
-    if (typeof t === 'string') return { name: t.slice(0, 200), description: t.slice(0, 2000) }
-    const fn = (t.function && typeof t.function === 'object') ? t.function : t
-    const extra = []
-    for (const k of Object.keys(fn)) if (!['name', 'description', 'parameters'].includes(k)) extra.push(`${k}: ${typeof fn[k] === 'object' ? JSON.stringify(fn[k]) : fn[k]}`)
-    const confirm = fn.requires_confirmation ?? fn.require_confirmation ?? fn.confirmation ?? fn.human_approval ?? fn.approval
-    return {
-      name: String(fn.name || 'unnamed').slice(0, 200),
-      description: [typeof fn.description === 'string' ? fn.description : '', ...extra].join(' ').trim().slice(0, 5000),
-      confirm: confirm === undefined ? undefined : asBool(confirm),
-      readOnly: fn.read_only === true || fn.readonly === true,
-      params: fn.parameters ? JSON.stringify(fn.parameters) : '',
-    }
-  })
-  const so = o.sample_outputs ?? o.sampleOutputs ?? o.outputs ?? o.samples ?? []
-  return { systemPrompt: (typeof sp === 'string' ? sp : JSON.stringify(sp ?? '')).slice(0, MAX_INPUT_CHARS), tools, samples: (Array.isArray(so) ? so : [so]).slice(0, MAX_SAMPLES).map((x) => (typeof x === 'string' ? x : JSON.stringify(x) ?? '')).map((x) => x.slice(0, MAX_INPUT_CHARS)) }
-}
-
 // ---------- helpers ----------
-export function maskSecret(s) {
-  const t = String(s)
-  return t.length <= 8 ? '****' : t.slice(0, 3) + '…' + '*'.repeat(4) + ' (' + t.length + ' chars)'
-}
-const F = (id, severity, detail, evidence) => ({ id, severity, title: CATALOG[id].title, cat: CATALOG[id].cat, fix: CATALOG[id].fix, detail, ...(evidence ? { evidence } : {}) })
+const F = (id, severity, detail, evidence) => ({ id, severity, title: CATALOG[id].title, cat: CATALOG[id].cat, fix: CATALOG[id].fix, owasp: CATALOG[id].owasp, atlas: CATALOG[id].atlas, detail, ...(evidence ? { evidence } : {}) })
+
+const PRIVATE_DATA = /\b(customers?|patients?|employees?|accounts?|user data|personal|pii|credentials?|secrets?|confidential|internal|private|records?|crm|ticket|email|inbox|database|payroll|medical|financial|invoices?|salesforce)\b/i
+const toolText = (t) => `${t.name} ${t.description}`
+const allText = (inp) => [inp.systemPrompt, inp.configText || '', ...inp.tools.map((t) => `${toolText(t)} ${t.params || ''}`)].join('\n')
+const isGuarded = (t) => t.confirm === true || CONFIRM.test(toolText(t)) || SCOPE.test(toolText(t))
 
 function classifyTool(t) {
   const hay = `${t.name} ${t.description}`
@@ -142,8 +110,7 @@ function classifyTool(t) {
   return kinds
 }
 
-// ---------- the checks ----------
-function checkInjection(inp, tools) {
+function checkInjection(inp, tools, ctx = {}) {
   const out = []
   const p = inp.systemPrompt
   const hierarchy = /(system|developer)\s+(instructions?|prompt|messages?)\s+(take|have|override|supersede|outrank)|(never|do not|don't|must not)\s+(follow|obey|execute|act on)\s+(any\s+)?(instructions?|commands?|directives?)\s+(found|contained|embedded|that appear|inside|in|from)|(treat|consider)\s+[^.]{0,80}\s+as\s+(untrusted|data|information only)|ignore\s+(any\s+)?instructions?\s+(in|inside|within|from)|(only|solely)\s+(follow|obey)\s+(the\s+)?(system|developer|operator)/i
@@ -155,6 +122,7 @@ function checkInjection(inp, tools) {
   const vars = untrustedVars.map((m) => m[1] || (VARNAME.test(m[2] || '') ? m[2] : '') || (VARNAME.test(m[3] || '') ? m[3] : '')).filter(Boolean)
   const inlineMention = /\b(here is|below is|the following|paste[sd]?|attached|insert(ed)?)\b[^\n]{0,60}\b(email|document|web ?page|ticket|message|content|file|transcript)\b/i.test(p) && !vars.length
   const uniq = [...new Set(vars)]
+  ctx.vars = uniq
   if (uniq.length) out.push(F('PI-2', 'high', `Template placeholders inject external text into the prompt: ${uniq.slice(0, 5).map((v) => '{' + v + '}').join(', ')}.`))
   const delim = /(<\/?[a-z_][\w-]*>|```|"""|'''|={3,}|-{3,}\s*(begin|start|end)|\[\/?(document|content|data|untrusted)[^\]]*\]|BEGIN [A-Z ]+|END [A-Z ]+)/i
   if ((uniq.length || inlineMention) && !delim.test(p)) out.push(F('PI-3', 'high', 'External content is referenced but no delimiter (XML tags, fences, begin/end markers) separates it from instructions.'))
@@ -202,14 +170,14 @@ function checkPermissions(inp, tools) {
   return out
 }
 
+
 function checkLeakage(inp, tools) {
   const out = []
-  const all = [['system prompt', inp.systemPrompt], ...tools.map((t) => [`tool "${t.name}"`, `${t.description} ${t.params || ''}`])]
+  const all = [['system prompt', inp.systemPrompt], ...(inp.configText ? [['config', inp.configText]] : []), ...tools.map((t) => [`tool "${t.name}"`, `${t.description} ${t.params || ''}`])]
   const seen = new Set()
   for (const [where, txt] of all) {
-    for (const [label, re] of SECRET_PATTERNS) {
-      const m = txt.match(re)
-      if (m && !seen.has(label + where)) { seen.add(label + where); out.push(F('DL-1', 'critical', `${label} found in the ${where}.`, maskSecret(m[0]))) }
+    for (const s of scanSecrets(txt)) {
+      if (!seen.has(s.label + where)) { seen.add(s.label + where); out.push(F('DL-1', 'critical', `${s.label} found in the ${where}.`, s.masked)) }
     }
   }
   const filterRe = /(redact|mask(ing)?|sanitis|sanitiz|output (filter|guard|check|validation)|dlp|pii (filter|scrub)|content filter|post-?process|block(ed)? (patterns|secrets|domains)|allowlisted? (domains|links)|strip (links|images))/i
@@ -219,17 +187,160 @@ function checkLeakage(inp, tools) {
     out.push(F('DL-2', touchesData || hasOutbound ? 'high' : 'medium', 'No output filtering, redaction or link/image allowlisting is described.'))
   const piiHandling = /(minimi[sz]|mask|redact|anonymi[sz]|pseudonymi[sz]|do not (log|store|share|repeat|include)[^.]{0,40}(pii|personal|ssn|card)|only (the )?(last|first) \d)/i
   if (/\b(pii|personal (data|information)|ssn|social security|date of birth|dob|card number|medical|health|patient|customer[_ ](data|records?|details|history)|credit card|card number)\b/i.test(inp.systemPrompt + ' ' + tools.map((t) => t.description).join(' ')) && !piiHandling.test(inp.systemPrompt))
-    out.push(F('DL-3', 'medium', 'Personal data is in scope but the prompt has no minimisation, masking or logging rules.'))
+    out.push(F('DL-3', 'medium', 'PII is in scope but the prompt has no minimisation, masking or logging rules.'))
   if (/\b(do not|don't|never)\s+(reveal|disclose|share|repeat|show|output)\b[^.\n]{0,50}\b(system prompt|instructions|these rules|prompt)\b|\bkeep\b[^.\n]{0,30}\b(prompt|instructions)\b[^.\n]{0,20}\b(secret|confidential)\b|\b(confidential|secret)\b[^.\n]{0,30}\b(do not|never)\b/i.test(inp.systemPrompt)
-      && (touchesData || all.slice(0, 1).some(([, t]) => /\b(internal|discount|pricing|api|endpoint|policy|rules?)\b/i.test(t))))
+      && (touchesData || /\b(internal|discount|pricing|api|endpoint|policy|rules?)\b/i.test(inp.systemPrompt)))
     out.push(F('DL-4', 'low', 'The prompt relies on "do not reveal" wording as its only protection.'))
   inp.samples.forEach((s, i) => {
-    for (const [label, re] of SECRET_PATTERNS) { const m = s.match(re); if (m) out.push(F('DL-5', 'critical', `Sample output #${i + 1} contains a ${label}.`, maskSecret(m[0]))) }
-    for (const [label, re] of PII_PATTERNS) { if (label === 'phone number' || label === 'payment card number') { const m = s.match(re); if (m && (label !== 'payment card number' || luhn(m[0]))) out.push(F('DL-5', 'high', `Sample output #${i + 1} contains a ${label}.`, maskSecret(m[0]))) } else if (re.test(s)) out.push(F('DL-5', 'high', `Sample output #${i + 1} contains a ${label}.`)) }
+    for (const x of scanSecrets(s)) out.push(F('DL-5', 'critical', `Sample output #${i + 1} contains a ${x.label}.`, x.masked))
+    for (const x of scanPII(s)) out.push(F('DL-5', 'high', `Sample output #${i + 1} contains a ${x.label}.`, x.masked))
   })
+  // personal identifiers embedded in the prompt/config themselves (emails are normal there, so only high-risk kinds count)
+  const embedded = scanPII(inp.systemPrompt + '\n' + (inp.configText || '')).filter((x) => ['US SSN', 'payment card number', 'IBAN'].includes(x.label))
+  for (const x of embedded) out.push(F('DL-6', 'high', `A ${x.label} appears in the prompt or config.`, x.masked))
   return out
 }
 
+function checkAgentic(inp, tools, ctx) {
+  const out = []
+  const p = `${inp.systemPrompt}\n${inp.configText || ''}`
+  const names = tools.map((t) => t.name)
+  const hasRisky = tools.some((t) => classifyTool(t).length)
+  const multi = (inp.agents && inp.agents.length > 1) || /\b(hand[- ]?offs?|sub-?agents?|delegat(e|es|ed|ion)\s+to|orchestrator|multi-?agent|transfer[_ ]to[_ ]\w+|route[sd]?\s+to\s+(the\s+)?\w+\s+agent|another agent|other agents)\b/i.test(p) || names.some((n) => /^(transfer_to_|handoff|delegate|call_agent|ask_agent)/i.test(n))
+  const handoffMitigated = /(messages?|output|text|results?|requests?|responses?)\s+(from|of)\s+(other|another|sub|upstream|peer)\s*-?agents?\s+(is|are|as|must be|should be)\s+(untrusted|data|unverified)|treat\s+[^.]{0,60}\bagents?\b[^.]{0,40}\b(untrusted|data|unverified)|validate[^.]{0,40}(hand-?off|agent)|structured[^.]{0,30}(hand-?off|fields)|re-?check[^.]{0,30}permissions/i.test(p)
+  if (multi && !handoffMitigated) out.push(F('MA-1', hasRisky ? 'high' : 'medium', `Multi-agent or handoff behaviour is present${inp.agents && inp.agents.length ? ` (${inp.agents.length} agents)` : ''} but nothing says messages from other agents are untrusted or validated.`))
+  const spawners = tools.filter((t) => /\b(spawn|create[_ -]?agent|start[_ -]?agent|sub-?agents?|delegate|fork[_ -]?agent)\b/i.test(toolText(t)))
+  if (spawners.length && !/\b(max(imum)?[_ -]?(depth|agents?|sub-?agents?)|depth (limit|of \d)|at most \d+ (sub-?)?agents?|limited to \d+ (sub-?)?agents?)\b/i.test(p + spawners.map(toolText).join(' ')))
+    out.push(F('MA-2', 'medium', `Tool "${spawners[0].name}" can start or delegate to other agents with no stated depth or count limit.`))
+  const memTools = tools.filter((t) => /\b(memory|remember|save[_ -]?memory|store[_ -]?memory|vector[_ -]?(store|db)|upsert|long[- ]term)\b/i.test(toolText(t)) && /\b(save|store|write|remember|add|upsert|update|append|persist)\b/i.test(toolText(t)))
+  const memPrompt = /\b(long[- ]term memory|persistent memory|remember\s+(anything|things|facts|what|information|details|preferences)|remember[^.\n]{0,40}\b(web|page|email|document)s?\b|save[^.\n]{0,30}to memory|store[^.\n]{0,30}\bmemory\b|memory (is|are) (written|updated))\b/i.test(p)
+  const memWritable = memTools.length > 0 || memPrompt
+  const memMitigated = /(only (store|save|remember)[^.]{0,60}(user|confirmed|stated)|never (store|save|remember)[^.]{0,60}(instructions?|content|web|email)|validate[^.]{0,30}memor|memory[^.]{0,40}(review|approval|confirm)|tag[^.]{0,30}source|user[^.]{0,20}(review|delete)[^.]{0,20}memor)/i.test(p)
+  if (memWritable && !memMitigated) {
+    const untrusted = (ctx.reads && ctx.reads.length > 0) || (ctx.vars && ctx.vars.length > 0)
+    out.push(F('MM-1', untrusted ? 'high' : 'medium', untrusted ? 'Persistent memory can be written while the agent also reads untrusted content, and no write validation is described.' : 'Persistent memory is writable and no validation of what gets stored is described.'))
+  }
+  if (/\bshared (memory|vector|index|knowledge base|store)\b|memory (is )?shared (across|between|among) (all )?(users|customers|tenants|sessions)|(all|every) (users|customers|tenants)[^.\n]{0,40}(same|shared) (memory|index|store)|global memory/i.test(p) && !/(per[- ](user|tenant|customer)|isolated|partition|namespace)/i.test(p))
+    out.push(F('MM-2', 'high', 'Memory or retrieval is described as shared across users, tenants or sessions, with no isolation described.'))
+  const tri = ctx.trifecta
+  if (tri && tri.complete && !tri.gated) out.push(F('LT-1', 'critical', `Private data (${tri.privateData.evidence.slice(0, 2).join(', ')}), untrusted content (${tri.untrusted.evidence.slice(0, 2).join(', ')}) and an outbound channel (${tri.external.evidence.slice(0, 2).join(', ')}) are all reachable, with the outbound channel unguarded.`))
+  return out
+}
+
+function checkGovernance(inp, tools, ctx) {
+  const out = []
+  const p = `${inp.systemPrompt}\n${inp.configText || ''}`
+  for (const t of tools) {
+    const m = t.mcp
+    if (!m) continue
+    const cmd = (m.command || '').split(/[\\/]/).pop().toLowerCase().replace(/\.(cmd|exe)$/, '')
+    const args = m.args || []
+    const pkg = args.find((a) => a && !a.startsWith('-') && !/^(run|dlx|exec|--)$/.test(a))
+    let unpinned = false
+    if (['npx', 'bunx'].includes(cmd) || (cmd === 'pnpm' && args.includes('dlx'))) unpinned = !!pkg && !/@\d[\w.+-]*$/.test(pkg)
+    else if (cmd === 'uvx' || (cmd === 'pipx' && args.includes('run'))) unpinned = !!pkg && !/(==|@)\d[\w.+-]*$/.test(pkg)
+    else if (cmd === 'docker' && args.includes('run')) { const img = [...args].reverse().find((a) => /^[a-z0-9][\w./-]*(:[\w.-]+)?(@sha256:[0-9a-f]{64})?$/i.test(a) && a.includes('/') || /@sha256:/.test(a)); unpinned = !!img && !/@sha256:/.test(img) && (!/:/.test(img) || /:latest$/.test(img)) }
+    if (unpinned) out.push(F('MCP-1', 'medium', `MCP server "${m.key}" runs "${cmd} ${pkg || ''}" without a pinned version${args.includes('-y') ? ' and with auto-install (-y)' : ''}.`))
+    if (m.url) {
+      let host = ''
+      try { host = new URL(m.url).hostname } catch { /* ignore */ }
+      const local = /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/.test(host)
+      if (/^http:\/\//i.test(m.url) && !local) out.push(F('MCP-2', 'high', `MCP server "${m.key}" is reached over plain HTTP (${host || 'invalid URL'}).`))
+      else if (!local && !m.hasAuth) out.push(F('MCP-2', 'medium', `Remote MCP server "${m.key}" shows no authentication header or token.`))
+    }
+    if (/filesystem|file-system|\bfs\b/i.test(`${m.key} ${args.join(' ')}`) && args.some((a) => /^(\/|~|\$HOME|%USERPROFILE%|\/home|\/Users|\/root|[A-Za-z]:[\\/]?)$/.test(a)))
+      out.push(F('MCP-3', 'high', `MCP filesystem server "${m.key}" is rooted at a broad path (${args.find((a) => /^(\/|~|\$HOME|%USERPROFILE%|\/home|\/Users|\/root|[A-Za-z]:[\\/]?)$/.test(a))}).`))
+  }
+  const hay = allText(inp)
+  const risky = ctx.risky || []
+  if ((tools.length >= 3 || risky.length) && !/\b(max(imum)?[_ -]?(steps?|iterations?|turns?|tool[_ -]?calls?|loops?|actions?)|step (limit|cap)|iteration limit|budget|timeout|time[- ]?limit|rate[- ]?limit|spend (limit|cap)|token (limit|budget)|at most \d+ (steps?|tool calls?|actions?|iterations?))\b/i.test(hay))
+    out.push(F('RL-1', 'low', 'No maximum number of steps, tool calls, time or spend is stated.'))
+  if (risky.length && !/\b(audit[- ]?(log|trail)|log(s|ged)? (every|all|each)|append-only|every (tool )?call (is )?logged|logging (of|for))\b/i.test(hay))
+    out.push(F('AU-1', 'low', 'High-impact tools are present but no audit logging of their calls is described.'))
+  const wild = /\b(allow(ed)?[_-]?(tools|actions|commands|paths|domains|permissions)?|permissions?|auto[_-]?approve|always[_-]?allow)\b["']?\s*[:=]\s*(\[\s*)?["']\*["']|\ballow[_-]?all\b["']?\s*[:=]\s*["']?true|\b(dangerously[_-]?skip[_-]?permissions|bypass[_-]?permissions|skip[_-]?permissions)\b|\bpermissions?\b["']?\s*[:=]\s*["']?(all|\*|any)\b/i
+  const starTool = tools.find((t) => t.name === '*' || /^\*$/.test(t.name))
+  if (starTool || wild.test(hay)) out.push(F('TP-6', 'high', starTool ? 'A tool or permission entry is the wildcard "*".' : 'The config grants all permissions (wildcard, allow-all or skip-permissions setting).'))
+  return out
+}
+
+/** The "lethal trifecta": private data + untrusted content + external communication in one agent. */
+export function computeTrifecta(inp, tools = inp.tools, vars = []) {
+  const privTools = tools.filter((t) => /\b(read[_ -]?(email|inbox|mail|file|record|customer)|crm|database|sql|query|customer|employee|payroll|salesforce|file[_ -]?system|filesystem|drive|vault|secrets?)\b/i.test(toolText(t)))
+  const privEvidence = privTools.map((t) => `tool ${t.name}`)
+  if (PRIVATE_DATA.test(inp.systemPrompt)) privEvidence.push('prompt mentions private data')
+  const reads = tools.filter((t) => UNTRUSTED_TOOL.test(toolText(t)))
+  const untrustedEvidence = [...reads.map((t) => `tool ${t.name}`), ...vars.map((v) => `placeholder {${v}}`)]
+  const exfil = tools.filter((t) => !t.readOnly && classifyTool(t).some((k) => EXFIL_KINDS.includes(k.k)))
+  const externalEvidence = exfil.map((t) => `tool ${t.name}`)
+  const unguarded = exfil.filter((t) => !isGuarded(t))
+  const leg = (ev) => ({ present: ev.length > 0, evidence: ev.slice(0, 6) })
+  const complete = privEvidence.length > 0 && untrustedEvidence.length > 0 && externalEvidence.length > 0
+  return { privateData: leg(privEvidence), untrusted: leg(untrustedEvidence), external: leg(externalEvidence), complete, gated: complete && unguarded.length === 0, legs: [privEvidence.length > 0, untrustedEvidence.length > 0, externalEvidence.length > 0].filter(Boolean).length }
+}
+
+/** Tool x risk matrix for the excessive-agency view. */
+export function buildMatrix(inp, tools = inp.tools) {
+  return tools.map((t) => {
+    const kinds = classifyTool(t)
+    const hay = toolText(t)
+    const lookupName = /^(get|list|view|read|lookup|look[_ -]?up|show|check|find|search)[_ -]/i.test(t.name)
+    const ro = t.readOnly || (READ_ONLY.test(hay) && !kinds.some((k) => k.k === 'shell'))
+    const active = ro ? [] : kinds.filter((k) => !(lookupName && ['payment', 'admin'].includes(k.k)))
+    const top = [...active].sort((a, b) => SEVERITY_ORDER.indexOf(a.sev) - SEVERITY_ORDER.indexOf(b.sev))[0]
+    const readsUntrusted = UNTRUSTED_TOOL.test(hay)
+    const confirmed = t.confirm === true || (t.confirm === undefined && CONFIRM.test(hay) && !/\b(no|without|never|skip)\s+(human\s+)?(confirm|approv)/i.test(hay))
+    return { name: t.name, kinds: active.map((k) => k.k), labels: active.map((k) => k.label), readsUntrusted, readOnly: !!ro, confirmed: active.length ? confirmed : null, scoped: active.length ? SCOPE.test(hay) : null, risk: top ? top.sev : readsUntrusted ? 'low' : 'none', agent: t.agent || undefined }
+  })
+}
+export const MATRIX_COLUMNS = [['shell', 'Shell'], ['payment', 'Payment'], ['file_write', 'File write'], ['email', 'Messaging'], ['network', 'Network'], ['db_write', 'DB write'], ['admin', 'Admin']]
+
+// ---------- scoring ----------
+export function grade(score) { return score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F' }
+
+export function scoreFindings(findings, weights = SEVERITY_WEIGHT) {
+  const w = { ...SEVERITY_WEIGHT, ...(weights || {}) }
+  const by = Object.fromEntries(Object.keys(CATEGORIES).map((k) => [k, 0]))
+  for (const f of findings) by[f.cat] += Math.max(0, Number(w[f.severity]) || 0)
+  // Each category loses at most 40 points so one weak area cannot dominate. With five categories the summed loss is
+  // scaled by 0.6 (the same 120-point ceiling the original three-category model had), and the total floor is 0.
+  const cat = Object.fromEntries(Object.entries(by).map(([k, v]) => [k, Math.max(0, 100 - Math.min(v, 100))]))
+  const lost = Object.values(by).reduce((a, v) => a + Math.min(v, CATEGORY_CAP), 0)
+  return { score: Math.max(0, Math.round(100 - lost * LOSS_SCALE)), categories: cat }
+}
+
+/**
+ * analyze(raw, opts). opts.disabled = rule IDs to skip, opts.weights = severity weight overrides.
+ * Input may be a string (JSON, YAML, text sections) or an already-parsed object.
+ */
+export function analyze(raw, opts = {}) {
+  const truncated = typeof raw === 'string' && raw.length > MAX_INPUT_CHARS && !/^\s*[{[]/.test(raw.slice(0, 50))
+  const inp = (raw && typeof raw === 'object') ? normalize(raw) : parseInput(raw)
+  return analyzeInput(inp, opts, truncated)
+}
+
+/** Analyze an already-parsed input ({systemPrompt, tools, samples, agents, configText, format}). */
+export function analyzeInput(inp, opts = {}, truncated = false) {
+  const tools = inp.tools
+  const ctx = {}
+  const inj = checkInjection(inp, tools, ctx)
+  ctx.reads = tools.filter((t) => UNTRUSTED_TOOL.test(toolText(t)))
+  const perm = checkPermissions(inp, tools)
+  ctx.risky = tools.filter((t) => { const k = classifyTool(t); return k.length && !t.readOnly && !(READ_ONLY.test(toolText(t)) && !k.some((x) => x.k === 'shell')) && k.some((x) => ['critical', 'high'].includes(x.sev)) })
+  ctx.trifecta = computeTrifecta(inp, tools, ctx.vars || [])
+  let findings = [...inj, ...perm, ...checkLeakage(inp, tools), ...checkAgentic(inp, tools, ctx), ...checkGovernance(inp, tools, ctx)]
+  const disabled = new Set(Array.isArray(opts.disabled) ? opts.disabled.filter((x) => typeof x === 'string') : [])
+  if (disabled.size) findings = findings.filter((f) => !disabled.has(f.id))
+  findings.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
+  const weights = opts.weights && typeof opts.weights === 'object' ? opts.weights : null
+  const { score, categories } = scoreFindings(findings, weights)
+  const customized = disabled.size > 0 || (weights && Object.keys(weights).some((k) => weights[k] !== SEVERITY_WEIGHT[k]))
+  return {
+    version: 2, engine: ENGINE_VERSION, score, grade: grade(score), categories, findings,
+    trifecta: ctx.trifecta, matrix: buildMatrix(inp, tools), format: inp.format || 'unknown',
+    summary: { promptChars: inp.systemPrompt.length, tools: tools.length, samples: inp.samples.length, agents: (inp.agents || []).length, mcpServers: tools.filter((t) => t.mcp).length, ...(truncated ? { truncated: true } : {}) },
+    ...(customized ? { customized: true, disabled: [...disabled] } : {}),
+  }
+}
 function luhn(s) {
   const d = s.replace(/\D/g, '')
   if (d.length < 13 || d.length > 16) return false
@@ -238,27 +349,6 @@ function luhn(s) {
   return sum % 10 === 0
 }
 
-// ---------- scoring ----------
-export function grade(score) { return score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F' }
-
-export function scoreFindings(findings) {
-  const by = { injection: 0, permissions: 0, leakage: 0 }
-  for (const f of findings) by[f.cat] += SEVERITY_WEIGHT[f.severity]
-  // Each category loses at most 40 points so one weak area cannot dominate; the total floor is 0.
-  const cat = Object.fromEntries(Object.entries(by).map(([k, v]) => [k, Math.max(0, 100 - Math.min(v, 100))]))
-  const lost = Object.values(by).reduce((a, v) => a + Math.min(v, 40), 0)
-  return { score: Math.max(0, 100 - lost), categories: cat }
-}
-
-export function analyze(raw) {
-  const truncated = typeof raw === 'string' && raw.length > MAX_INPUT_CHARS && !/^\s*\{/.test(raw.slice(0, 50))
-  const inp = (raw && typeof raw === 'object') ? normalize(raw) : parseInput(raw)
-  const tools = inp.tools
-  const findings = [...checkInjection(inp, tools), ...checkPermissions(inp, tools), ...checkLeakage(inp, tools)]
-  findings.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
-  const { score, categories } = scoreFindings(findings)
-  return { version: 1, score, grade: grade(score), categories, findings, summary: { promptChars: inp.systemPrompt.length, tools: tools.length, samples: inp.samples.length, ...(truncated ? { truncated: true } : {}) } }
-}
 
 // ---------- shareable hash (report only; the pasted config is never encoded) ----------
 export function encodeReport(report) {
@@ -282,15 +372,16 @@ export function decodeReport(hash) {
     const sevMap = { c: 'critical', h: 'high', m: 'medium', l: 'low' }
     const own = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k)
     const findings = o.f.slice(0, 60).filter((x) => Array.isArray(x) && typeof x[0] === 'string' && own(CATALOG, x[0]) && typeof x[1] === 'string' && own(sevMap, x[1]))
-      .map(([id, s, detail, ev]) => ({ id, severity: sevMap[s], title: CATALOG[id].title, cat: CATALOG[id].cat, fix: CATALOG[id].fix, detail: String(typeof detail === 'string' ? detail : '').slice(0, 400), ...(typeof ev === 'string' && ev ? { evidence: ev.slice(0, 80) } : {}) }))
+      .map(([id, s, detail, ev]) => ({ id, severity: sevMap[s], title: CATALOG[id].title, cat: CATALOG[id].cat, fix: CATALOG[id].fix, owasp: CATALOG[id].owasp, atlas: CATALOG[id].atlas, detail: String(typeof detail === 'string' ? detail : '').slice(0, 400), ...(typeof ev === 'string' && ev ? { evidence: ev.slice(0, 80) } : {}) }))
     const score = Math.max(0, Math.min(100, Math.round(o.s)))
-    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : 0)
     const c = o.c && typeof o.c === 'object' ? o.c : {}
-    const categories = Object.fromEntries(Object.keys(CATEGORIES).map((k) => [k, num(c[k])]))
+    // categories added in v2 are absent from older links: treat a missing value as untouched (100), not as zero
+    const num = (v, dflt) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : dflt)
+    const categories = Object.fromEntries(Object.keys(CATEGORIES).map((k) => [k, num(Object.prototype.hasOwnProperty.call(c, k) ? c[k] : undefined, Object.prototype.hasOwnProperty.call(c, k) ? 0 : 100)]))
     const n = o.n && typeof o.n === 'object' ? o.n : {}
     const big = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1e7, Math.round(v))) : 0)
-    const summary = { promptChars: big(n.promptChars), tools: big(n.tools), samples: big(n.samples) }
-    return { version: 1, score, grade: grade(score), categories, findings, summary, shared: true }
+    const summary = { promptChars: big(n.promptChars), tools: big(n.tools), samples: big(n.samples), agents: big(n.agents), mcpServers: big(n.mcpServers) }
+    return { version: 2, score, grade: grade(score), categories, findings, summary, shared: true, trifecta: null, matrix: [], format: 'shared' }
   } catch { return null }
 }
 
@@ -298,9 +389,12 @@ export function reportToMarkdown(report, title = 'Agent security report') {
   const L = [`# ${title}`, '', `**Score: ${report.score}/100 (grade ${report.grade})**`, '',
     `| Check | Sub-score |`, `|---|---|`,
     ...Object.entries(CATEGORIES).map(([k, v]) => `| ${v} | ${report.categories[k]}/100 |`), '']
+  if (report.trifecta && report.trifecta.complete) L.push(`> Lethal trifecta: all three legs present${report.trifecta.gated ? ' (outbound channel is gated)' : ' and the outbound channel is not gated'}.`, '')
   if (!report.findings.length) L.push('No findings from the rule set. That does not prove the agent is safe; see the limits in the README.')
   for (const f of report.findings) {
-    L.push(`### [${f.severity.toUpperCase()}] ${f.id} ${f.title}`, '', f.detail + (f.evidence ? ` Evidence (masked): \`${f.evidence}\`` : ''), '', `**Fix:** ${f.fix}`, '')
+    const tags = [...(f.owasp || []).map((o) => `OWASP ${o}`), ...(f.atlas || [])].join(', ')
+    L.push(`### [${f.severity.toUpperCase()}] ${f.id} ${f.title}`, '', f.detail + (f.evidence ? ` Evidence (masked): \`${f.evidence}\`` : ''), '', ...(tags ? [`Tags: ${tags}`, ''] : []), `**Fix:** ${f.fix}`, '')
   }
+  L.push('---', '_Static pattern review of the configuration text. It cannot observe model behaviour; see the README for limits._')
   return L.join('\n')
 }

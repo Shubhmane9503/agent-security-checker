@@ -14,6 +14,10 @@ for (const f of readdirSync(dir).filter((x) => x.endsWith('.json')).sort()) {
   const j = JSON.parse(readFileSync(new URL(f, dir), 'utf8'))
   reports[f] = { name: j.name, label: j._label, report: analyze(JSON.stringify(j)) }
 }
+{
+  const y = readFileSync(new URL('05-support-crew.yaml', dir), 'utf8')
+  reports['05-support-crew.yaml'] = { name: (y.match(/^name:\s*(.+)$/m) || [])[1], label: 'FICTIONAL EXAMPLE AGENT. Not a real product.', report: analyze(y) }
+}
 const [open, mixed, hard] = Object.values(reports).map((x) => x.report)
 
 t('open agent scores F', () => { assert.ok(open.score <= 20, `score ${open.score}`); assert.equal(open.grade, 'F') })
@@ -97,7 +101,7 @@ if (process.argv.includes('--write')) {
     mkdirSync(out, { recursive: true })
     for (const [f, x] of Object.entries(reports)) {
       const md = `> **${x.label}** The agent below is invented for demonstration. Any keys, emails or card numbers in it are fake test values.\n\n` + reportToMarkdown(x.report, `Sample report: ${x.name}`) + `\n---\nShare link hash (append to the demo page URL as #r=):\n\n\`${encodeReport(x.report)}\`\n`
-      writeFileSync(new URL(f.replace('.json', '.md'), out), md)
+      writeFileSync(new URL(f.replace(/\.(json|yaml)$/, '.md'), out), md)
     }
     console.log('wrote sample reports')
   })

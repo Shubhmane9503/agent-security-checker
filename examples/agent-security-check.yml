@@ -1,0 +1,35 @@
+# Example GitHub Actions workflow: fail the build when an agent configuration scores below 70
+# and upload findings to GitHub code scanning (SARIF). Copy to .github/workflows/ in your repo.
+name: agent-security
+on:
+  pull_request:
+    paths: ['agents/**', '.mcp.json', 'mcp.json']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Shubhmane9503/agent-security-checker
+          path: .asc
+          # pin to a release tag or commit SHA in real use
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Analyze agent config
+        run: node .asc/cli.mjs agents/support-bot.json --format sarif --out asc.sarif --fail-under 70 --fail-on critical
+        continue-on-error: true
+        id: asc
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: asc.sarif
+      - name: Fail if the check failed
+        if: steps.asc.outcome == 'failure'
+        run: exit 1

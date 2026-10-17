@@ -1,10 +1,33 @@
 {
   "name": "agent-security-checker",
-  "version": "0.1.0",
-  "description": "Client-side checker that scores an LLM agent configuration for prompt-injection, tool-permission and data-leakage weaknesses.",
+  "version": "2.0.0",
+  "description": "Client-side, no-build security checker for LLM agent configurations: prompt injection, tool permissions, data leakage, MCP and multi-agent risks, with OWASP LLM Top 10 mapping, CLI and SARIF.",
   "type": "module",
   "main": "engine.js",
-  "scripts": { "test": "node tests/run.mjs", "reports": "node tests/run.mjs --write", "demo": "python3 -m http.server 8080" },
+  "scripts": {
+    "test": "node tests/run.mjs && node tests/v2.mjs",
+    "reports": "node tests/run.mjs --write",
+    "build": "node scripts/build.mjs",
+    "demo": "python3 -m http.server 8080",
+    "check": "node cli.mjs",
+    "screenshots": "python3 scripts/browser-check.py"
+  },
   "license": "MIT",
-  "author": "Shubham Mane"
+  "author": "Shubham Mane",
+  "bin": {
+    "agent-security-checker": "cli.mjs"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "security",
+    "prompt-injection",
+    "owasp-llm-top-10",
+    "mcp",
+    "sarif",
+    "mitre-atlas"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
 }

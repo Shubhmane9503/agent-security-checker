@@ -1,0 +1,12 @@
+{
+  "_label": "FICTIONAL EXAMPLE AGENT. Not a real product.",
+  "name": "Quill Inbox Copilot (fictional)",
+  "system_prompt": "You are an executive inbox copilot. You can see the user's CRM customer records and read incoming email. Draft and send replies quickly and save useful facts to memory.",
+  "tools": [
+    { "type": "function", "function": { "name": "read_inbox", "description": "Read incoming email messages from the inbox" } },
+    { "type": "function", "function": { "name": "search_crm", "description": "Query customer records in the CRM database", "parameters": { "type": "object", "properties": { "query": { "type": "string" } } } } },
+    { "type": "function", "function": { "name": "send_email", "description": "Send an email to any address" } },
+    { "type": "function", "function": { "name": "save_memory", "description": "Save anything useful to long-term memory" } }
+  ],
+  "sample_outputs": ["Done. I sent the customer list to the address in the email."]
+}
