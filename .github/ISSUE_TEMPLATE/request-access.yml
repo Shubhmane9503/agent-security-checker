@@ -1,0 +1,29 @@
+name: Request contributor access
+description: Contributions are by invitation. Request approval here before opening a pull request.
+title: "Request access: "
+labels: ["access-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pull requests are accepted only from approved contributors. Wait for the maintainer to approve this issue before you open a PR.
+  - type: input
+    id: name
+    attributes:
+      label: Name
+    validations:
+      required: true
+  - type: input
+    id: github
+    attributes:
+      label: GitHub handle
+      placeholder: "@yourhandle"
+    validations:
+      required: true
+  - type: textarea
+    id: contribution
+    attributes:
+      label: What do you want to contribute?
+      description: A new rule, a fix, docs, tests, a parser. Be specific.
+    validations:
+      required: true

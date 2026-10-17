@@ -388,7 +388,7 @@ t('cli --harden prints the hardened prompt (idempotent) and a summary', () => {
 // ---------- bundle and static-site security ----------
 t('index.html: strict CSP, no inline scripts, no external resources', () => {
   const h = rd('index.html'); assert.ok(h.includes("default-src 'none'") && h.includes("connect-src 'none'") && h.includes("script-src 'self'")); assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>\s*\S/.test(h))
-  assert.ok(!/(src|href)=["']https?:/.test(h)); assert.ok(!/\son\w+=/.test(h)); assert.ok(!/@import|url\(["']?https?:/.test(rd('app.css')))
+  assert.ok(!/(\ssrc|<link[^>]*\shref)=["']https?:/.test(h)); assert.ok(!/\son\w+=/.test(h)); assert.ok(!/@import|url\(["']?https?:/.test(rd('app.css')))
 })
 t('app code has no network APIs, eval or unescaped innerHTML sources', () => {
   const src = rd('app.js') + rd('lib/report.js') + rd('lib/charts.js') + rd('lib/advice.js') + rd('lib/store.js')

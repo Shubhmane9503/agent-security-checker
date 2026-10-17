@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a bug or a wrong finding (not a security vulnerability; see SECURITY.md for those).
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Do not paste real secrets or private prompts. Use a sanitized example.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: input
+    id: env
+    attributes:
+      label: Browser or Node version

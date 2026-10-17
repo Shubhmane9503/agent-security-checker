@@ -13,7 +13,8 @@
     "screenshots": "python3 scripts/browser-check.py"
   },
   "license": "MIT",
-  "author": "Shubham Mane",
+  "author": "Shubham Mane (https://shubhammane.com)",
+  "homepage": "https://shubhammane.com",
   "bin": {
     "agent-security-checker": "cli.mjs"
   },

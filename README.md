@@ -10,13 +10,18 @@ It runs entirely in your browser or in Node. No network calls, no accounts, no a
 
 More: [fix roadmap](screenshots/desktop-dark-03-roadmap.png) · [permission matrix](screenshots/desktop-dark-04-matrix.png) · [attack tests](screenshots/desktop-dark-05-attack-tests.png) · [export and badge](screenshots/desktop-dark-06-export-badge.png) · [compare](screenshots/desktop-dark-07-compare.png) · [history](screenshots/desktop-dark-08-history.png) · [rule docs](screenshots/desktop-dark-09-rules.png) · [settings](screenshots/desktop-dark-10-settings.png)
 
+## Author
+
+Built by [Shubham Mane](https://shubhammane.com), security engineer. GitHub: [@Shubhmane9503](https://github.com/Shubhmane9503).
+
 ## Quick start
 
 ```bash
 git clone https://github.com/Shubhmane9503/agent-security-checker && cd agent-security-checker
-python3 -m http.server 8080          # then open http://localhost:8080/
+python3 -m http.server 8123          # then open http://localhost:8123/
 # or open standalone.html directly from disk (file://): a single self-contained file, no server needed
 node cli.mjs samples/01-support-bot-open.json --fail-under 70
+node cli.mjs samples/01-support-bot-open.json --harden   # print a hardened rewrite of the prompt
 npm test                             # 103 tests, Node 18+, no dependencies
 ```
 
@@ -77,6 +82,7 @@ node cli.mjs <config.json|yaml|txt|-> [options]
   --fail-on <severity>    exit 1 if any finding is at or above critical|high|medium|low
   --disable PI-4,RL-1     skip rules
   --weights critical=30,high=12
+  --harden                print a hardened rewrite of the system prompt
   --list-rules
 ```
 
@@ -84,7 +90,7 @@ Exit codes: `0` pass, `1` threshold failed, `2` usage or input error. Input over
 
 ### GitHub Action
 
-[`examples/agent-security-check.yml`](examples/agent-security-check.yml) runs the CLI on pull requests, fails below a score, and uploads SARIF to GitHub code scanning. Copy it to `.github/workflows/` and pin the checker to a release tag or commit SHA.
+[`examples/agent-security-check.yml`](examples/agent-security-check.yml) runs the CLI on pull requests, fails below a score, and uploads SARIF to GitHub code scanning. It is an example only and is not active in this repo. To use it, copy it to `.github/workflows/` in your own repo and pin the checker to a release tag or commit SHA.
 
 ### Badge
 
@@ -156,6 +162,10 @@ const report = analyze(configText, { disabled: ['RL-1'] })   // JSON, YAML, text
 console.log(reportToMarkdown(report), rankFixes(report).slice(0, 5))
 ```
 
+## Contributing
+
+Contributions are by invitation. Open a "Request contributor access" issue first and wait for approval before opening a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT
+MIT, copyright Shubham Mane. See [LICENSE](LICENSE).
