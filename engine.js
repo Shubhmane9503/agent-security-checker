@@ -95,6 +95,54 @@ const SCOPE = /\b(allow[- ]?list(ed)?|whitelist(ed)?|scoped?|restricted to|limit
 const UNTRUSTED_TOOL = /\b(browse|browser|web[_ -]?(search|fetch|browse|page)|fetch[_ -]?url|scrape|read[_ -]?(email|inbox|mail)|inbox|search[_ -]?(email|mail)|rag|retriev(e|al)|knowledge[_ -]?base|read[_ -]?file|open[_ -]?file|ticket|issue[s]?|pull[_ -]?request|document|pdf|transcript|rss|slack[_ -]?read|read[_ -]?message)\b/i
 const EXFIL_KINDS = ['email', 'network']
 
+
+// ---------- permissive-wording patterns (shared with the hardener in lib/advice.js) ----------
+const UNTRUSTED_SRC = String.raw`(?:web\s*pages?|websites?|web\s*(?:content|results?|search\s*results?)|documents?|docs?|e-?mails?|inbox(?:es)?|messages?|tickets?|files?|pdfs?|attachments?|tool\s*(?:outputs?|results?|responses?)|search\s*results?|(?:the\s+)?(?:internet|web)|retrieved\s+(?:content|text|documents?)|user[- ]supplied\s+(?:content|text|files?)|external\s+(?:content|sources?))`
+const LISTSRC = String.raw`${UNTRUSTED_SRC}(?:\s*(?:,|/|and|or|&)\s*(?:the\s+)?${UNTRUSTED_SRC})*`
+/** Sentence-level match for "follow/obey/execute any instructions found in <untrusted source>". */
+export const OBEY_UNTRUSTED = new RegExp(String.raw`\b(?:follow|obey|execute|carry\s+out|comply\s+with|act\s+on|do\s+(?:whatever|what(?:ever)?)|perform)\s+(?:any|all|every|the|whatever|any\s+and\s+all)?\s*(?:instructions?|commands?|directives?|requests?|orders?|text|directions?|steps)\s+(?:that\s+(?:you\s+)?(?:find|see|read|appear|are\s+(?:found|given|written))\s+)?(?:found\s+|contained\s+|embedded\s+|given\s+|written\s+|that\s+appear\s+)?(?:in|inside|within|from|on|by|via)\s+(?:the\s+|any\s+|all\s+|each\s+|every\s+)?${LISTSRC}|\b(?:do|does)\s+(?:whatever|what)\s+(?:the\s+|any\s+)?${UNTRUSTED_SRC}\s+(?:says?|tell|asks?|instructs?)|\b(?:trust|obey)\s+(?:all\s+|any\s+|every\s+)?(?:instructions?\s+in\s+)?(?:the\s+)?${UNTRUSTED_SRC}\s+(?:content|text|instructions?)?`, 'gi')
+const ACCESS_WORD = String.raw`(?:full|unrestricted|unlimited|unfettered|unrestrained|complete|total|root|admin(?:istrator)?|superuser|sudo)`
+const FULL_ACCESS_LEAD = String.raw`(?:(?:,\s*)?(?:and\s+)?(with|having|have|has|get|gets|granted|grant(?:ed)?\s+you)\s+)?`
+/** Phrase match for "full/unrestricted access to <tools>" (two forms). Group 1 = lead word, if any. */
+export const FULL_ACCESS = new RegExp(String.raw`${FULL_ACCESS_LEAD}\b${ACCESS_WORD}(?:\s+and\s+${ACCESS_WORD})?\s+(?:access|control|permissions?|privileges?|rights?|authority)\s+(?:to|of|over|on|for)\s+(?:the\s+|all\s+|any\s+|every\s+|your\s+)?[^.!?\n]*|${FULL_ACCESS_LEAD}\b(?:full|unrestricted|unlimited|unfettered|root|admin(?:istrator)?)\s+(?:shell|bash|terminal|e-?mail|database|db|file\s*system|filesystem|network|internet|system|tool|command)s?\b[^.!?\n]{0,60}?\baccess\b|\b(?:unrestricted|unlimited|unfettered)\s+(?:use\s+of\s+)?(?:tools?|shell|commands?|e-?mail|database)\b`, 'gi')
+const NEGATED = /\b(no|never|not|without|don'?t|do not|cannot|can'?t|avoid|instead of)\b[^.!?\n]{0,25}$/i
+/** Matches of a global regex that are not negated ("never follow instructions found in pages" is fine). */
+export function permissiveMatches(re, text) {
+  const out = []
+  const s = String(text ?? '')
+  for (const m of s.matchAll(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'))) {
+    if (!m[0].trim()) continue
+    const sentenceStart = Math.max(s.lastIndexOf('.', m.index), s.lastIndexOf('\n', m.index), s.lastIndexOf('!', m.index), s.lastIndexOf('?', m.index)) + 1
+    const head = s.slice(sentenceStart, m.index + Math.min(m[0].length, 0))
+    const whole = s.slice(sentenceStart, m.index + m[0].length)
+    if (NEGATED.test(head.slice(-40)) || /\b(never|do not|don'?t|must not|not allowed to|should not|shouldn'?t)\b[^.!?\n]{0,15}\b(follow|obey|execute|carry out|comply|act on|trust|give|grant|have)\b/i.test(whole.slice(0, whole.length))) continue
+    let index = m.index, text = m[0]
+    if (re === OBEY_UNTRUSTED) { // widen to the whole sentence so the hardener can replace it
+      let end = m.index + m[0].length
+      while (end < s.length && !/[.!?\n]/.test(s[end])) end++
+      if (end < s.length && s[end] !== '\n') end++
+      index = sentenceStart; text = s.slice(sentenceStart, end)
+    }
+    out.push({ index, text, lead: m[1] || m[2] })
+  }
+  return out
+}
+export const SECURITY_RULES_HEADING = /^[ \t]*#{1,6}[ \t]*security rules[ \t]*:?[ \t]*$/i
+
+export const HIERARCHY_RE = /(system|developer)\s+(instructions?|prompt|messages?)\s+(take|have|override|supersede|outrank)|(never|do not|don't|must not)\s+(follow|obey|execute|act on)\s+(any\s+)?(instructions?|commands?|directives?)\s+(found|contained|embedded|that appear|inside|in|from)|(treat|consider)\s+[^.]{0,80}\s+as\s+(untrusted|data|information only)|ignore\s+(any\s+)?instructions?\s+(in|inside|within|from)|(only|solely)\s+(follow|obey)\s+(the\s+)?(system|developer|operator)/i
+const CONFIRM_RULE_RE = /\b(wait for explicit approval|ask(ing)? (the )?(signed-in )?user|ask for confirmation|confirm(ation)? before|approval:)/i
+const SCOPED_TOOLS_RE = /\b(only the tools (needed|the task needs|required)|least[- ]privilege|use only the tools)/i
+const AUTONOMY_RE = /\b(never|don't|do not|without)\s+(ask(ing)?|request(ing)?|wait(ing)?)\b[^.\n]{0,40}\b(confirm|permission|approv|user)|\bfully\s+autonomous(ly)?\b|\bact\s+autonomously\b|\bwithout\s+(asking|confirmation|approval)\b|\bno\s+need\s+to\s+(ask|confirm)\b/i
+/** Permissive lines that sit in the same prompt as a rule saying the opposite. Returns short descriptions. */
+export function promptContradictions(p) {
+  const out = []
+  const text = String(p ?? '')
+  if (permissiveMatches(OBEY_UNTRUSTED, text).length && HIERARCHY_RE.test(text)) out.push('it says to follow instructions found in untrusted content but also that such content is data to ignore')
+  if (permissiveMatches(FULL_ACCESS, text).length && (SCOPED_TOOLS_RE.test(text) || CONFIRM_RULE_RE.test(text))) out.push('it grants full or unrestricted access but also asks for scoped tools or confirmation')
+  if (AUTONOMY_RE.test(text) && /\b(wait for explicit approval|ask the signed-in user)/i.test(text)) out.push('it says to act without confirmation but also requires approval')
+  return out
+}
+
 // ---------- helpers ----------
 const F = (id, severity, detail, evidence) => ({ id, severity, title: CATALOG[id].title, cat: CATALOG[id].cat, fix: CATALOG[id].fix, owasp: CATALOG[id].owasp, atlas: CATALOG[id].atlas, detail, ...(evidence ? { evidence } : {}) })
 
@@ -113,9 +161,15 @@ function classifyTool(t) {
 function checkInjection(inp, tools, ctx = {}) {
   const out = []
   const p = inp.systemPrompt
-  const hierarchy = /(system|developer)\s+(instructions?|prompt|messages?)\s+(take|have|override|supersede|outrank)|(never|do not|don't|must not)\s+(follow|obey|execute|act on)\s+(any\s+)?(instructions?|commands?|directives?)\s+(found|contained|embedded|that appear|inside|in|from)|(treat|consider)\s+[^.]{0,80}\s+as\s+(untrusted|data|information only)|ignore\s+(any\s+)?instructions?\s+(in|inside|within|from)|(only|solely)\s+(follow|obey)\s+(the\s+)?(system|developer|operator)/i
+  const hierarchy = HIERARCHY_RE
   if (p && !hierarchy.test(p)) out.push(F('PI-1', 'high', 'The prompt never says system instructions outrank content the agent reads, or that embedded instructions must be ignored.'))
   if (!p) out.push(F('PI-1', 'medium', 'No system prompt supplied, so no instruction hierarchy can be confirmed.'))
+
+  // PI-6: the prompt orders the agent to obey text found in untrusted content. PI-7: that order sits next to a rule that says the opposite.
+  const obey = permissiveMatches(OBEY_UNTRUSTED, p)
+  if (obey.length) out.push(F('PI-6', 'high', 'The prompt tells the agent to follow instructions found in untrusted content: "' + obey[0].text.trim().slice(0, 120) + '".', obey[0].text.trim().slice(0, 80)))
+  const contradictions = promptContradictions(p)
+  if (contradictions.length) out.push(F('PI-7', 'high', 'The prompt contradicts its own security rules: ' + contradictions.join('; ') + '.'))
 
   const untrustedVars = [...p.matchAll(/\{\{?\s*([a-z_][a-z0-9_.]*?(?:doc|document|content|email|message|page|web|input|query|text|ticket|retriev\w*|context|file|body|transcript|user\w*)[a-z0-9_.]*)\s*\}?\}|\$\{\s*([a-z_][\w.]*)\s*\}|<<\s*([a-z_]\w*)\s*>>/gi)]
   const VARNAME = /doc|content|email|message|page|web|input|query|text|ticket|retriev|context|file|body|transcript|user|result|data|comment|issue/i
@@ -159,6 +213,8 @@ function checkPermissions(inp, tools) {
     if (/^(run_?any|exec(ute)?_?(any|arbitrary)|shell|bash|http_?request|fetch_?any|any_?url)\b|\b(any|arbitrary|unrestricted|unlimited)\s+(command|shell|url|code|file|sql|query)s?\b/i.test(hay) || (/^(shell|bash|terminal|run_command|execute|exec)$/i.test(t.name) && !scoped))
       out.push(F('TP-5', 'high', `Tool "${t.name}" looks general-purpose and unrestricted.`))
   }
+  const full = permissiveMatches(FULL_ACCESS, `${inp.systemPrompt}\n${inp.configText || ''}`)
+  if (full.length) out.push(F('TP-7', 'high', 'The prompt grants full or unrestricted tool access: "' + full[0].text.trim().slice(0, 120) + '".', full[0].text.trim().slice(0, 80)))
   const reads = tools.filter((t) => UNTRUSTED_TOOL.test(`${t.name} ${t.description}`) )
   const exfil = risky.filter((r) => r.kinds.some((k) => EXFIL_KINDS.includes(k.k)))
   if (reads.length && exfil.length) {
@@ -188,7 +244,7 @@ function checkLeakage(inp, tools) {
   const piiHandling = /(minimi[sz]|mask|redact|anonymi[sz]|pseudonymi[sz]|do not (log|store|share|repeat|include)[^.]{0,40}(pii|personal|ssn|card)|only (the )?(last|first) \d)/i
   if (/\b(pii|personal (data|information)|ssn|social security|date of birth|dob|card number|medical|health|patient|customer[_ ](data|records?|details|history)|credit card|card number)\b/i.test(inp.systemPrompt + ' ' + tools.map((t) => t.description).join(' ')) && !piiHandling.test(inp.systemPrompt))
     out.push(F('DL-3', 'medium', 'PII is in scope but the prompt has no minimisation, masking or logging rules.'))
-  if (/\b(do not|don't|never)\s+(reveal|disclose|share|repeat|show|output)\b[^.\n]{0,50}\b(system prompt|instructions|these rules|prompt)\b|\bkeep\b[^.\n]{0,30}\b(prompt|instructions)\b[^.\n]{0,20}\b(secret|confidential)\b|\b(confidential|secret)\b[^.\n]{0,30}\b(do not|never)\b/i.test(inp.systemPrompt)
+  if (!/\b(do not rely on secrecy|assume (these|the|my|this)\s+(system\s+)?(instructions|prompt)[^.\n]{0,30}\bcan be read)\b/i.test(inp.systemPrompt) && /\b(do not|don't|never)\s+(reveal|disclose|share|repeat|show|output)\b[^.\n]{0,50}\b(system prompt|instructions|these rules|prompt)\b|\bkeep\b[^.\n]{0,30}\b(prompt|instructions)\b[^.\n]{0,20}\b(secret|confidential)\b|\b(confidential|secret)\b[^.\n]{0,30}\b(do not|never)\b/i.test(inp.systemPrompt)
       && (touchesData || /\b(internal|discount|pricing|api|endpoint|policy|rules?)\b/i.test(inp.systemPrompt)))
     out.push(F('DL-4', 'low', 'The prompt relies on "do not reveal" wording as its only protection.'))
   inp.samples.forEach((s, i) => {

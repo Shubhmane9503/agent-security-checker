@@ -27,7 +27,7 @@ npm test                             # 103 tests, Node 18+, no dependencies
 **Analysis**
 1. OWASP LLM Top 10 (2025) tags on every finding, plus an OWASP coverage grid on the Rules page
 2. MITRE ATLAS technique tags (indicative mappings)
-3. 27 rules in 5 categories (was 15 in 3)
+3. 30 rules in 5 categories (was 15 in 3)
 4. Lethal-trifecta detector: private data + untrusted content + external communication, with "gated" vs "unguarded" distinction
 5. Multi-agent and handoff checks (trust boundary, unbounded sub-agent spawning)
 6. Memory-poisoning and cross-tenant memory checks
@@ -92,7 +92,7 @@ Download the SVG from the Export tab (or `node cli.mjs agent.json --format badge
 
 ## Rules
 
-27 rules; the full reference with examples is in [`docs/RULES.md`](docs/RULES.md) and in the app's Rules page.
+30 rules; the full reference with examples is in [`docs/RULES.md`](docs/RULES.md) and in the app's Rules page.
 
 | Area | Rules |
 |---|---|

@@ -3,6 +3,7 @@
 // Exit codes: 0 ok, 1 score below --fail-under or findings at/above --fail-on, 2 usage or input error.
 import { readFileSync, writeFileSync, statSync } from 'node:fs'
 import { analyze, reportToMarkdown, SEVERITY_ORDER, SEVERITY_WEIGHT, CATALOG, ENGINE_VERSION } from './engine.js'
+import { hardenPrompt } from './lib/advice.js'
 import { reportToJson, reportToSarif, reportToHtml, badgeSvg } from './lib/report.js'
 
 const MAX_BYTES = 2000000
@@ -19,6 +20,7 @@ Options:
   --fail-on <severity>     exit 1 if any finding is at or above: critical|high|medium|low
   --disable <IDs>          comma-separated rule IDs to skip, e.g. RL-1,AU-1
   --weights <k=v,...>      override severity weights, e.g. critical=30,high=12
+  --harden                 print a hardened version of the prompt (idempotent) instead of a report; summary goes to stderr
   --name <label>           title used in reports
   --list-rules             print all rule IDs and titles
   -h, --help               show this help
@@ -38,6 +40,7 @@ export function parseArgs(argv) {
     const val = () => { if (i + 1 >= argv.length) die(`${a} needs a value`); return argv[++i] }
     if (a === '-h' || a === '--help') o.help = true
     else if (a === '--list-rules') o.list = true
+    else if (a === '--harden') o.harden = true
     else if (a === '--format') o.format = val()
     else if (a === '--out') o.out = val()
     else if (a === '--fail-under') { const n = Number(val()); if (!Number.isFinite(n) || n < 0 || n > 100) die('--fail-under must be a number from 0 to 100'); o.failUnder = n }
@@ -64,6 +67,11 @@ export function run(argv, { stdin = () => readFileSync(0, 'utf8') } = {}) {
     else { if (statSync(file).size > MAX_BYTES) die('file is larger than 2 MB'); raw = readFileSync(file, 'utf8') }
   } catch (e) { die(`cannot read ${file}: ${e.message}`) }
   if (/\u0000/.test(raw.slice(0, 2000))) die('input looks like a binary file')
+  if (o.harden) {
+    const h = hardenPrompt(raw)
+    const notes = [`score ${h.before} -> ${h.projected} (findings ${h.findingsBefore} -> ${h.findingsAfter}), ${h.blocks} rule(s) added`, ...h.changes.map((x) => `- ${x}`)].join('\n') + '\n'
+    return { code: 0, out: h.prompt, notes, hardened: h }
+  }
   const report = analyze(raw, { disabled: o.disable, weights: o.weights })
   const title = o.name || (file === '-' ? 'Agent security report' : file)
   let out
@@ -92,6 +100,7 @@ export function run(argv, { stdin = () => readFileSync(0, 'utf8') } = {}) {
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   const res = run(process.argv.slice(2))
   if (res.outFile) { writeFileSync(res.outFile, res.out); process.stderr.write(`wrote ${res.outFile}\n`) } else process.stdout.write(res.out)
+  if (res.notes) process.stderr.write(res.notes)
   if (res.reasons && res.reasons.length) process.stderr.write(`FAIL: ${res.reasons.join('; ')}\n`)
   process.exit(res.code)
 }
