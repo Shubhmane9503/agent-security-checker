@@ -1,0 +1,10 @@
+{
+  "name": "agent-security-checker",
+  "version": "0.1.0",
+  "description": "Client-side checker that scores an LLM agent configuration for prompt-injection, tool-permission and data-leakage weaknesses.",
+  "type": "module",
+  "main": "engine.js",
+  "scripts": { "test": "node tests/run.mjs", "reports": "node tests/run.mjs --write", "demo": "python3 -m http.server 8080" },
+  "license": "MIT",
+  "author": "Shubham Mane"
+}

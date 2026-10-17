@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Agent Security Checker</title>
+<style>
+body{font:15px/1.5 system-ui,sans-serif;max-width:920px;margin:0 auto;padding:20px;background:#0f1419;color:#e6edf3}
+h1{font-size:22px}textarea{width:100%;height:260px;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:10px;font:13px ui-monospace,monospace;box-sizing:border-box}
+button{background:#238636;color:#fff;border:0;border-radius:6px;padding:8px 14px;margin:6px 6px 6px 0;cursor:pointer}button.g{background:#21262d;border:1px solid #30363d}
+.note{color:#8b949e;font-size:13px}.score{font-size:40px;font-weight:700}.f{border:1px solid #30363d;border-radius:6px;padding:10px;margin:8px 0;background:#161b22}
+.sev{font-size:12px;text-transform:uppercase;font-weight:700}.critical{color:#ff7b72}.high{color:#ffa657}.medium{color:#e3b341}.low{color:#8b949e}
+code{background:#21262d;padding:1px 4px;border-radius:4px}
+</style></head><body>
+<h1>AI Agent Security Checker</h1>
+<p class="note">Runs entirely in your browser. Nothing you paste is sent anywhere or stored. Serve this folder over HTTP (<code>python3 -m http.server</code>) so the ES module loads.</p>
+<div id="samples"></div>
+<textarea id="in" spellcheck="false" placeholder='{"system_prompt":"...","tools":[{"name":"send_email","description":"..."}],"sample_outputs":["..."]}'></textarea>
+<div><button id="run">Check agent</button><button class="g" id="md">Copy Markdown report</button></div>
+<div id="out"></div>
+<script type="module">
+import { analyze, reportToMarkdown, CATEGORIES } from './engine.js'
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+let report = null
+function show(r) {
+  report = r
+  $('out').innerHTML = `<div class="score">${r.score}/100 <small>grade ${r.grade}</small></div>` +
+    Object.entries(CATEGORIES).map(([k, v]) => `<div class="note">${esc(v)}: ${r.categories[k]}/100</div>`).join('') +
+    (r.findings.length ? r.findings.map((f) => `<div class="f"><span class="sev ${f.severity}">${f.severity}</span> <b>${esc(f.id)}</b> ${esc(f.title)}<div>${esc(f.detail || '')}</div>${f.evidence ? `<div class="note">Evidence: <code>${esc(f.evidence)}</code></div>` : ''}<div><b>Fix:</b> ${esc(f.fix)}</div></div>`).join('') : '<p>No known gaps found by these rules.</p>')
+}
+$('run').onclick = () => show(analyze($('in').value))
+$('md').onclick = async () => { if (report) try { await navigator.clipboard.writeText(reportToMarkdown(report)) } catch {} }
+for (const [file, label] of [['01-support-bot-open', 'Support bot (weak)'], ['02-research-assistant-mixed', 'Research assistant (mixed)'], ['03-ops-agent-hardened', 'Ops agent (hardened)']]) {
+  const b = document.createElement('button'); b.className = 'g'; b.textContent = label
+  b.onclick = async () => { const j = await (await fetch(`./samples/${file}.json`)).json(); delete j._label; const t = JSON.stringify(j, null, 2); $('in').value = t; show(analyze(t)) }
+  $('samples').appendChild(b)
+}
+</script></body></html>
